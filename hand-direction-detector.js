@@ -54,6 +54,7 @@ class HandDirectionDetector extends HTMLElement {
           width: 100%;
           max-width: 640px;
           margin: 0 auto;
+          box-sizing: border-box;
         }
         
         .container {
@@ -158,10 +159,16 @@ class HandDirectionDetector extends HTMLElement {
         
         .training-controls {
           display: flex;
-          flex-wrap: wrap;
+          flex-direction: column;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+        
+        .training-controls-row {
+          display: flex;
           gap: 10px;
           align-items: center;
-          margin-bottom: 10px;
+          flex-wrap: wrap;
         }
         
         .training-controls select {
@@ -250,18 +257,22 @@ class HandDirectionDetector extends HTMLElement {
       <div class="training-section">
         <h3>🎓 Training Mode</h3>
         <div class="training-controls">
-          <select id="directionSelect">
-            <option value="up">UP</option>
-            <option value="down">DOWN</option>
-            <option value="left">LEFT</option>
-            <option value="right">RIGHT</option>
-          </select>
-          <input type="file" id="fileInput" accept="image/*" multiple>
-          <button id="uploadBtn" class="upload-btn">Upload from Local</button>
-          <button id="openCameraBtn" class="capture-btn">Open Camera for Training</button>
-          <button id="takeScreenshotBtn" class="capture-btn" style="display: none;">Take Screenshot</button>
-          <button id="closeCameraBtn" class="clear-btn" style="display: none;">Close Camera</button>
-          <button id="clearBtn" class="clear-btn">Clear Training Data</button>
+          <div class="training-controls-row">
+            <select id="directionSelect">
+              <option value="up">UP</option>
+              <option value="down">DOWN</option>
+              <option value="left">LEFT</option>
+              <option value="right">RIGHT</option>
+            </select>
+          </div>
+          <div class="training-controls-row">
+            <input type="file" id="fileInput" accept="image/*" multiple>
+            <button id="uploadBtn" class="upload-btn">Upload from Local</button>
+            <button id="openCameraBtn" class="capture-btn">Open Camera for Training</button>
+            <button id="takeScreenshotBtn" class="capture-btn" style="display: none;">Take Screenshot</button>
+            <button id="closeCameraBtn" class="clear-btn" style="display: none;">Close Camera</button>
+            <button id="clearBtn" class="clear-btn">Clear Training Data</button>
+          </div>
         </div>
         <div id="trainingCameraContainer" style="display: none; margin-top: 15px; text-align: center;">
           <video id="trainingVideo" autoplay playsinline style="width: 100%; max-width: 640px; border-radius: 8px; background: #000; transform: scaleX(-1);"></video>

@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hand Direction Detector</title>
+    <title>Hand & Animal Detector</title>
     <style>
         body {
             margin: 0;
@@ -20,16 +20,51 @@
         h1 {
             color: white;
             text-align: center;
-            margin-bottom: 30px;
+            margin-bottom: 20px;
             text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .navbar {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            background: rgba(255, 255, 255, 0.1);
+            padding: 10px;
+            border-radius: 8px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .nav-btn {
+            padding: 12px 24px;
+            font-size: 16px;
+            font-weight: bold;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            transition: all 0.3s ease;
+        }
+        
+        .nav-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
+            transform: translateY(-2px);
+        }
+        
+        .nav-btn.active {
+            background: white;
+            color: #667eea;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
         }
         
         .instructions {
             background: white;
             padding: 20px;
             border-radius: 8px;
-            margin-bottom: 20px;
+            margin: 0 auto 20px auto;
+            width: 100%;
             max-width: 640px;
+            box-sizing: border-box;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
         }
         
@@ -46,7 +81,16 @@
             margin-bottom: 8px;
         }
         
-        hand-direction-detector {
+        .detector-container {
+            display: none;
+        }
+        
+        .detector-container.active {
+            display: block;
+        }
+        
+        hand-direction-detector,
+        animal-detector {
             box-shadow: 0 8px 16px rgba(0,0,0,0.3);
             border-radius: 8px;
             overflow: hidden;
@@ -54,10 +98,15 @@
     </style>
 </head>
 <body>
-    <h1>🖐️ Hand Direction Detector</h1>
+    <h1>🖐️ Hand & Animal Detector</h1>
     
-    <div class="instructions">
-        <h2>How to Use:</h2>
+    <div class="navbar">
+        <button class="nav-btn active" id="handDetectorBtn" onclick="switchTab('hand')">🖐️ Hand Detection</button>
+        <button class="nav-btn" id="animalDetectorBtn" onclick="switchTab('animal')">🐾 Animal Detection</button>
+    </div>
+    
+    <div id="handInstructions" class="instructions">
+        <h2>Hand Detection - How to Use:</h2>
         <ul>
             <li>Click "Start Detection" to begin</li>
             <li>Allow camera access when prompted</li>
@@ -68,12 +117,57 @@
         </ul>
     </div>
     
-    <hand-direction-detector></hand-direction-detector>
+    <div id="animalInstructions" class="instructions" style="display: none;">
+        <h2>Animal Detection - How to Use:</h2>
+        <ul>
+            <li>Upload images or take screenshots of animals</li>
+            <li>Type the animal name (e.g., "cat", "dog", "bird")</li>
+            <li>Train a model with your labeled images</li>
+            <li>Test the model to detect animals in real-time</li>
+            <li>Make sure animals are clearly visible in the camera</li>
+        </ul>
+    </div>
+    
+    <div id="handDetectorContainer" class="detector-container active">
+        <hand-direction-detector></hand-direction-detector>
+    </div>
+    
+    <div id="animalDetectorContainer" class="detector-container">
+        <animal-detector></animal-detector>
+    </div>
+    
+    <script>
+        function switchTab(tab) {
+            // Update navbar buttons
+            const handBtn = document.getElementById('handDetectorBtn');
+            const animalBtn = document.getElementById('animalDetectorBtn');
+            const handContainer = document.getElementById('handDetectorContainer');
+            const animalContainer = document.getElementById('animalDetectorContainer');
+            const handInstructions = document.getElementById('handInstructions');
+            const animalInstructions = document.getElementById('animalInstructions');
+            
+            if (tab === 'hand') {
+                handBtn.classList.add('active');
+                animalBtn.classList.remove('active');
+                handContainer.classList.add('active');
+                animalContainer.classList.remove('active');
+                handInstructions.style.display = 'block';
+                animalInstructions.style.display = 'none';
+            } else {
+                handBtn.classList.remove('active');
+                animalBtn.classList.add('active');
+                handContainer.classList.remove('active');
+                animalContainer.classList.add('active');
+                handInstructions.style.display = 'none';
+                animalInstructions.style.display = 'block';
+            }
+        }
+    </script>
     
     <!-- Load TensorFlow.js -->
     <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
     
-    <!-- Load MediaPipe first, then component -->
+    <!-- Load MediaPipe first, then components -->
     <script type="module">
       try {
         console.log('Loading MediaPipe...');
@@ -85,8 +179,9 @@
         
         console.log('MediaPipe loaded successfully');
         
-        // Load the component
+        // Load both components
         await import('./hand-direction-detector.js');
+        await import('./animal-detector.js');
       } catch (error) {
         console.error('Failed to load MediaPipe:', error);
         document.body.innerHTML += '<div style="color: red; padding: 20px; text-align: center; background: white; margin: 20px; border-radius: 8px;">Error loading MediaPipe. Please check your internet connection and refresh the page.</div>';
