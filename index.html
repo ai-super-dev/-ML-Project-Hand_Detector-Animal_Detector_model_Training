@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Direction Detector</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        h1 {
+            color: white;
+            text-align: center;
+            margin-bottom: 30px;
+            text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
+        }
+        
+        .instructions {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            max-width: 640px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }
+        
+        .instructions h2 {
+            margin-top: 0;
+            color: #667eea;
+        }
+        
+        .instructions ul {
+            line-height: 1.8;
+        }
+        
+        .instructions li {
+            margin-bottom: 8px;
+        }
+        
+        hand-direction-detector {
+            box-shadow: 0 8px 16px rgba(0,0,0,0.3);
+            border-radius: 8px;
+            overflow: hidden;
+        }
+    </style>
+</head>
+<body>
+    <h1>🖐️ Hand Direction Detector</h1>
+    
+    <div class="instructions">
+        <h2>How to Use:</h2>
+        <ul>
+            <li>Click "Start Detection" to begin</li>
+            <li>Allow camera access when prompted</li>
+            <li>Point your <strong>index finger</strong> in different directions</li>
+            <li>The detector will show: <strong>UP</strong>, <strong>DOWN</strong>, <strong>LEFT</strong>, or <strong>RIGHT</strong></li>
+            <li>Make sure your hand is clearly visible in the camera</li>
+            <li>Keep your index finger extended and pointing in the direction you want to detect</li>
+        </ul>
+    </div>
+    
+    <hand-direction-detector></hand-direction-detector>
+    
+    <!-- Load TensorFlow.js -->
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.10.0/dist/tf.min.js"></script>
+    
+    <!-- Load MediaPipe first, then component -->
+    <script type="module">
+      try {
+        console.log('Loading MediaPipe...');
+        const {FilesetResolver, HandLandmarker} = await import('https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.0');
+        
+        window.MediaPipeFilesetResolver = FilesetResolver;
+        window.MediaPipeHandLandmarker = HandLandmarker;
+        window.mediaPipeReady = true;
+        
+        console.log('MediaPipe loaded successfully');
+        
+        // Load the component
+        await import('./hand-direction-detector.js');
+      } catch (error) {
+        console.error('Failed to load MediaPipe:', error);
+        document.body.innerHTML += '<div style="color: red; padding: 20px; text-align: center; background: white; margin: 20px; border-radius: 8px;">Error loading MediaPipe. Please check your internet connection and refresh the page.</div>';
+      }
+    </script>
+</body>
+</html>

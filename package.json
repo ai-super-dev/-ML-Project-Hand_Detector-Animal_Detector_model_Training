@@ -1,0 +1,24 @@
+{
+  "name": "hand-direction-detector",
+  "version": "1.0.0",
+  "description": "Web component for detecting hand direction using index finger",
+  "main": "hand-direction-detector.js",
+  "type": "module",
+  "scripts": {
+    "start": "npx http-server -p 8080 -c-1",
+    "dev": "npx http-server -p 8080 -c-1"
+  },
+  "keywords": [
+    "hand-detection",
+    "mediapipe",
+    "web-component",
+    "computer-vision",
+    "gesture-recognition"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "http-server": "^14.1.1"
+  }
+}
+
