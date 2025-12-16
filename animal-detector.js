@@ -375,16 +375,40 @@ class AnimalDetector extends HTMLElement {
       this.statusText.textContent = 'Loading MobileNet for feature extraction...';
       
       // Load MobileNet model for feature extraction
-      // Using MobileNet v2 from TensorFlow Hub
+      // Try multiple CDN sources
+      let loaded = false;
+      
+      // Try option 1: jsdelivr CDN
       try {
-        this.mobilenet = await tf.loadLayersModel('https://tfhub.dev/google/tfjs-model/imagenet/mobilenet_v2_100_224/feature_vector/3/default/1', {fromTFHub: true});
+        const modelUrl = 'https://cdn.jsdelivr.net/gh/tensorflow/tfjs-models@master/mobilenet/web_model/model.json';
+        this.mobilenet = await tf.loadLayersModel(modelUrl);
+        loaded = true;
+        console.log('MobileNet loaded successfully from jsdelivr');
       } catch (error) {
-        // Fallback: try alternative URL
-        console.warn('Primary MobileNet URL failed, trying alternative...', error);
-        this.mobilenet = await tf.loadLayersModel('https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v2_1.0_224/model.json');
+        console.warn('jsdelivr CDN failed, trying alternative...', error);
       }
       
-      this.statusText.textContent = 'MobileNet initialized. Ready for training and testing.';
+      // Try option 2: unpkg CDN
+      if (!loaded) {
+        try {
+          const modelUrl = 'https://unpkg.com/@tensorflow-models/mobilenet@2.1.0/dist/mobilenet_v2_1.0_224/model.json';
+          this.mobilenet = await tf.loadLayersModel(modelUrl);
+          loaded = true;
+          console.log('MobileNet loaded successfully from unpkg');
+        } catch (error) {
+          console.warn('unpkg CDN failed, using fallback feature extraction...', error);
+        }
+      }
+      
+      if (!loaded) {
+        // Use fallback: simplified feature extraction (no MobileNet)
+        this.statusText.textContent = 'Using simplified feature extraction (MobileNet unavailable - will use pixel features)';
+        this.mobilenet = null;
+        console.log('Using fallback feature extraction method');
+      } else {
+        this.statusText.textContent = 'MobileNet initialized. Ready for training and testing.';
+      }
+      
       this.mediaPipeReady = true;
     } catch (error) {
       console.error('Error initializing MobileNet:', error);
@@ -392,29 +416,45 @@ class AnimalDetector extends HTMLElement {
     }
   }
 
-  // Feature extraction using MobileNet
+  // Feature extraction using MobileNet or fallback method
   async extractFeatures(image) {
-    if (!this.mobilenet) {
-      throw new Error('MobileNet not initialized');
+    if (this.mobilenet) {
+      // Use MobileNet if available
+      // Preprocess image: resize to 224x224 (MobileNet input size)
+      const tensor = tf.browser.fromPixels(image)
+        .resizeNearestNeighbor([224, 224])
+        .expandDims(0)
+        .div(255.0); // Normalize to [0, 1]
+      
+      // Extract features
+      const features = this.mobilenet.predict(tensor);
+      
+      // Get feature vector as array
+      const featureArray = await features.data();
+      
+      // Clean up tensors
+      tensor.dispose();
+      features.dispose();
+      
+      return Array.from(featureArray);
+    } else {
+      // Fallback: Use simplified feature extraction
+      // Resize image and extract pixel features
+      const tensor = tf.browser.fromPixels(image)
+        .resizeNearestNeighbor([64, 64]) // Smaller size for efficiency
+        .expandDims(0)
+        .div(255.0); // Normalize to [0, 1]
+      
+      // Flatten to get feature vector
+      const flattened = tensor.flatten();
+      const featureArray = await flattened.data();
+      
+      // Clean up
+      tensor.dispose();
+      flattened.dispose();
+      
+      return Array.from(featureArray);
     }
-    
-    // Preprocess image: resize to 224x224 (MobileNet input size)
-    const tensor = tf.browser.fromPixels(image)
-      .resizeNearestNeighbor([224, 224])
-      .expandDims(0)
-      .div(255.0); // Normalize to [0, 1]
-    
-    // Extract features
-    const features = this.mobilenet.predict(tensor);
-    
-    // Get feature vector as array
-    const featureArray = await features.data();
-    
-    // Clean up tensors
-    tensor.dispose();
-    features.dispose();
-    
-    return Array.from(featureArray);
   }
 
   // Load image from file
@@ -457,8 +497,8 @@ class AnimalDetector extends HTMLElement {
       return;
     }
 
-    if (!this.mobilenet) {
-      alert('MobileNet not initialized. Please wait...');
+    if (!this.mediaPipeReady) {
+      alert('Feature extractor not ready. Please wait...');
       return;
     }
 
@@ -548,8 +588,8 @@ class AnimalDetector extends HTMLElement {
       return;
     }
 
-    if (!this.mobilenet) {
-      alert('MobileNet not initialized. Please wait...');
+    if (!this.mediaPipeReady) {
+      alert('Feature extractor not ready. Please wait...');
       return;
     }
 
@@ -916,7 +956,7 @@ class AnimalDetector extends HTMLElement {
   }
 
   async detectAnimalsInTestMode() {
-    if (!this.isTestModeActive || !this.testVideo || !this.trainedModel || !this.mobilenet) {
+    if (!this.isTestModeActive || !this.testVideo || !this.trainedModel || !this.mediaPipeReady) {
       return;
     }
 
