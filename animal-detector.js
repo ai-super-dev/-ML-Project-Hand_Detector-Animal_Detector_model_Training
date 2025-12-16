@@ -24,6 +24,12 @@ class AnimalDetector extends HTMLElement {
     this.isTestModeActive = false;
     this.testAnimationFrame = null;
     
+    // Confidence threshold for predictions (default 0.3 = 30%)
+    // If prediction confidence is below this, output "NONE"
+    // Lower default to avoid false negatives with newly trained models
+    this.confidenceThreshold = 0.3;
+    this.showRawPredictions = false; // Bypass threshold to see raw predictions
+    
     // Load training data from localStorage
     this.loadTrainingData();
   }
@@ -276,8 +282,25 @@ class AnimalDetector extends HTMLElement {
       <div class="training-section" style="margin-top: 20px;">
         <h3>🧪 Test Mode</h3>
         <div class="training-controls">
-          <button id="testBtn" class="toggle-btn" disabled>Start Test</button>
-          <button id="stopTestBtn" class="clear-btn" style="display: none;">Stop Test</button>
+          <div class="training-controls-row" style="margin-bottom: 10px;">
+            <label for="confidenceThreshold" style="font-weight: bold; color: #667eea; margin-right: 10px;">Confidence Threshold:</label>
+            <input type="range" id="confidenceThreshold" min="0.1" max="0.9" step="0.05" value="0.3" style="flex: 1; min-width: 200px;">
+            <span id="thresholdValue" style="min-width: 50px; text-align: center; font-weight: bold; color: #667eea;">0.30</span>
+          </div>
+          <div style="margin-bottom: 10px;">
+            <label style="display: flex; align-items: center; gap: 8px; font-size: 14px; color: #333;">
+              <input type="checkbox" id="showRawPredictions" style="width: 18px; height: 18px; cursor: pointer;">
+              <span>Show raw predictions (bypass threshold - for debugging)</span>
+            </label>
+          </div>
+          <div style="font-size: 12px; color: #666; margin-bottom: 10px; padding: 5px; background: #f0f0f0; border-radius: 4px;">
+            Predictions below this threshold will show "NONE". Higher = more strict (fewer false positives).<br>
+            <strong>Tip:</strong> Enable "Show raw predictions" to see actual confidence values even when below threshold.
+          </div>
+          <div class="training-controls-row">
+            <button id="testBtn" class="toggle-btn" disabled>Start Test</button>
+            <button id="stopTestBtn" class="clear-btn" style="display: none;">Stop Test</button>
+          </div>
         </div>
         <div id="testCameraContainer" style="display: none; margin-top: 15px; text-align: center;">
           <div style="position: relative; display: inline-block; width: 100%; max-width: 640px;">
@@ -333,6 +356,26 @@ class AnimalDetector extends HTMLElement {
     this.testConfidenceDisplay = this.shadowRoot.getElementById('testConfidenceDisplay');
     this.testConfidenceValue = this.shadowRoot.getElementById('testConfidenceValue');
     this.testStatus = this.shadowRoot.getElementById('testStatus');
+    this.confidenceThresholdSlider = this.shadowRoot.getElementById('confidenceThreshold');
+    this.thresholdValueDisplay = this.shadowRoot.getElementById('thresholdValue');
+    this.showRawPredictionsCheckbox = this.shadowRoot.getElementById('showRawPredictions');
+    
+    // Setup confidence threshold slider
+    if (this.confidenceThresholdSlider && this.thresholdValueDisplay) {
+      this.confidenceThresholdSlider.value = this.confidenceThreshold;
+      this.thresholdValueDisplay.textContent = this.confidenceThreshold.toFixed(2);
+      this.confidenceThresholdSlider.addEventListener('input', (e) => {
+        this.confidenceThreshold = parseFloat(e.target.value);
+        this.thresholdValueDisplay.textContent = this.confidenceThreshold.toFixed(2);
+      });
+    }
+    
+    // Setup raw predictions checkbox
+    if (this.showRawPredictionsCheckbox) {
+      this.showRawPredictionsCheckbox.addEventListener('change', (e) => {
+        this.showRawPredictions = e.target.checked;
+      });
+    }
     
     // Setup button handlers - placeholder functions for now
     this.uploadBtn.addEventListener('click', () => this.fileInput.click());
@@ -374,71 +417,261 @@ class AnimalDetector extends HTMLElement {
 
       this.statusText.textContent = 'Loading MobileNet for feature extraction...';
       
-      // Load MobileNet model for feature extraction
-      // Try multiple CDN sources
+      // Load MobileNet model - try multiple sources for reliability
       let loaded = false;
       
-      // Try option 1: jsdelivr CDN
-      try {
-        const modelUrl = 'https://cdn.jsdelivr.net/gh/tensorflow/tfjs-models@master/mobilenet/web_model/model.json';
-        this.mobilenet = await tf.loadLayersModel(modelUrl);
-        loaded = true;
-        console.log('MobileNet loaded successfully from jsdelivr');
-      } catch (error) {
-        console.warn('jsdelivr CDN failed, trying alternative...', error);
-      }
+      // Try option 1: Load MobileNet v2 from TensorFlow.js model repository (most reliable)
+      const mobilenetUrls = [
+        'https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v2_1.0_224/model.json',
+        'https://tfhub.dev/tensorflow/tfjs-model/mobilenet_v2_1.0_224/1/default/1',
+        'https://tfhub.dev/google/tfjs-model/imagenet/mobilenet_v2_100_224/feature_vector/3/default/1'
+      ];
       
-      // Try option 2: unpkg CDN
-      if (!loaded) {
+      for (const modelUrl of mobilenetUrls) {
+        if (loaded) break;
         try {
-          const modelUrl = 'https://unpkg.com/@tensorflow-models/mobilenet@2.1.0/dist/mobilenet_v2_1.0_224/model.json';
           this.mobilenet = await tf.loadLayersModel(modelUrl);
           loaded = true;
-          console.log('MobileNet loaded successfully from unpkg');
+          console.log('MobileNet v2 loaded successfully from:', modelUrl);
+          this.statusText.textContent = 'MobileNet v2 initialized. Ready for training and testing.';
+          break;
         } catch (error) {
-          console.warn('unpkg CDN failed, using fallback feature extraction...', error);
+          console.warn('Failed to load MobileNet from:', modelUrl, error);
+        }
+      }
+      
+      // Try option 2: Use official MobileNet package via dynamic import
+      if (!loaded) {
+        try {
+          // Dynamically import MobileNet package from CDN
+          const mobilenetModule = await import('https://cdn.jsdelivr.net/npm/@tensorflow-models/mobilenet@2.1.0/+esm');
+          const mobilenet = mobilenetModule.mobilenet || mobilenetModule.default || mobilenetModule;
+          
+          if (mobilenet && mobilenet.load) {
+            // Load MobileNet v2 with 1.0 alpha and 224x224 input size
+            this.mobilenet = await mobilenet.load({
+              version: 2,
+              alpha: 1.0,
+              inputSize: 224
+            });
+            loaded = true;
+            console.log('MobileNet v2 loaded successfully from @tensorflow-models/mobilenet package');
+            this.statusText.textContent = 'MobileNet v2 initialized. Ready for training and testing.';
+          }
+        } catch (error) {
+          console.warn('Failed to load MobileNet from package:', error);
+        }
+      }
+      
+      // Try option 3: TensorFlow Hub as additional fallback
+      if (!loaded) {
+        const tfHubUrls = [
+          'https://tfhub.dev/tensorflow/tfjs-model/mobilenet_v2_1.0_224/1/default/1',
+          'https://tfhub.dev/google/tfjs-model/imagenet/mobilenet_v2_100_224/feature_vector/3/default/1'
+        ];
+        
+        for (const modelUrl of tfHubUrls) {
+          if (loaded) break;
+          try {
+            this.mobilenet = await tf.loadLayersModel(modelUrl);
+            loaded = true;
+            console.log('MobileNet loaded successfully from TensorFlow Hub:', modelUrl);
+            this.statusText.textContent = 'MobileNet initialized from TensorFlow Hub. Ready for training and testing.';
+          } catch (error) {
+            console.warn('TensorFlow Hub URL failed:', modelUrl, error);
+          }
+        }
+      }
+      
+      // Try option 3: Create a lightweight convolutional feature extractor
+      if (!loaded) {
+        try {
+          // Create a simple convolutional feature extractor using standard conv2d layers
+          // This is a lightweight alternative that works offline
+          this.mobilenet = tf.sequential({
+            layers: [
+              // First conv block - reduce spatial dimensions
+              tf.layers.conv2d({
+                inputShape: [224, 224, 3],
+                filters: 32,
+                kernelSize: 3,
+                strides: 2,
+                padding: 'same',
+                activation: 'relu',
+                useBias: true
+              }),
+              tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }),
+              
+              // Second conv block
+              tf.layers.conv2d({
+                filters: 64,
+                kernelSize: 3,
+                strides: 1,
+                padding: 'same',
+                activation: 'relu',
+                useBias: true
+              }),
+              tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }),
+              
+              // Third conv block
+              tf.layers.conv2d({
+                filters: 128,
+                kernelSize: 3,
+                strides: 1,
+                padding: 'same',
+                activation: 'relu',
+                useBias: true
+              }),
+              tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }),
+              
+              // Fourth conv block
+              tf.layers.conv2d({
+                filters: 128,
+                kernelSize: 3,
+                strides: 1,
+                padding: 'same',
+                activation: 'relu',
+                useBias: true
+              }),
+              tf.layers.maxPooling2d({ poolSize: 2, strides: 2 }),
+              
+              // Global average pooling to reduce to feature vector
+              tf.layers.globalAveragePooling2d(),
+              
+              // Dense layer for feature extraction
+              tf.layers.dense({
+                units: 128,
+                activation: 'relu',
+                useBias: true
+              })
+            ]
+          });
+          
+          // Compile the model (needed for proper initialization)
+          this.mobilenet.compile({
+            optimizer: 'adam',
+            loss: 'categoricalCrossentropy',
+            metrics: ['accuracy']
+          });
+          
+          // Test the model with a dummy input to ensure it's properly initialized
+          const testInput = tf.zeros([1, 224, 224, 3]);
+          const testOutput = this.mobilenet.predict(testInput);
+          await testOutput.data(); // Wait for prediction to complete
+          testInput.dispose();
+          testOutput.dispose();
+          
+          loaded = true;
+          console.log('Created lightweight convolutional feature extractor');
+          this.statusText.textContent = 'Using lightweight feature extractor (pre-trained MobileNet unavailable). Ready for training and testing.';
+        } catch (error) {
+          console.warn('Failed to create feature extractor:', error);
+          console.error('Feature extractor error details:', error.message, error.stack);
         }
       }
       
       if (!loaded) {
-        // Use fallback: simplified feature extraction (no MobileNet)
-        this.statusText.textContent = 'Using simplified feature extraction (MobileNet unavailable - will use pixel features)';
+        // Last resort: simplified feature extraction (no MobileNet)
+        this.statusText.textContent = 'Error: Could not load MobileNet. Please check your internet connection and refresh the page.';
         this.mobilenet = null;
-        console.log('Using fallback feature extraction method');
-      } else {
-        this.statusText.textContent = 'MobileNet initialized. Ready for training and testing.';
+        console.error('All MobileNet loading methods failed. Using fallback feature extraction method.');
+        alert('Warning: MobileNet could not be loaded. The detector will use pixel features which may not work well. Please check your internet connection and refresh the page.');
       }
       
       this.mediaPipeReady = true;
     } catch (error) {
       console.error('Error initializing MobileNet:', error);
       this.statusText.textContent = `Error: ${error.message}. Check console (F12) for details.`;
+      this.mobilenet = null;
     }
   }
 
   // Feature extraction using MobileNet or fallback method
   async extractFeatures(image) {
     if (this.mobilenet) {
-      // Use MobileNet if available
-      // Preprocess image: resize to 224x224 (MobileNet input size)
-      const tensor = tf.browser.fromPixels(image)
-        .resizeNearestNeighbor([224, 224])
-        .expandDims(0)
-        .div(255.0); // Normalize to [0, 1]
-      
-      // Extract features
-      const features = this.mobilenet.predict(tensor);
-      
-      // Get feature vector as array
-      const featureArray = await features.data();
-      
-      // Clean up tensors
-      tensor.dispose();
-      features.dispose();
-      
-      return Array.from(featureArray);
+      // Check if this is the official MobileNet model (has infer method)
+      if (this.mobilenet.infer && typeof this.mobilenet.infer === 'function') {
+        // Use official MobileNet API - infer method extracts features
+        // The infer method automatically handles preprocessing (resize, normalize)
+        const features = this.mobilenet.infer(image, true); // true = embedding (feature vector), false = predictions
+        
+        // Get feature vector as array
+        const featureArray = await features.data();
+        
+        // Clean up tensors
+        features.dispose();
+        
+        return Array.from(featureArray);
+      } else {
+        // Use MobileNet loaded as a layers model (from TensorFlow Hub or custom)
+        // Preprocess image: resize to 224x224 (MobileNet input size)
+        // MobileNet expects images normalized to [-1, 1] range, not [0, 1]
+        const tensor = tf.browser.fromPixels(image)
+          .resizeNearestNeighbor([224, 224])
+          .expandDims(0)
+          .toFloat()
+          .div(tf.scalar(127.5))
+          .sub(tf.scalar(1.0)); // Normalize to [-1, 1]
+        
+        // For classification models, we need to extract features from before the final layer
+        // Create a feature extraction model by removing the last classification layer
+        let featureModel = this.mobilenet;
+        
+        // If this is a classification model (has many output classes), extract from intermediate layer
+        if (this.mobilenet.layers && this.mobilenet.layers.length > 0) {
+          // Check if last layer is a dense layer with many outputs (classification layer)
+          const lastLayer = this.mobilenet.layers[this.mobilenet.layers.length - 1];
+          if (lastLayer && lastLayer.outputShape && lastLayer.outputShape[lastLayer.outputShape.length - 1] > 100) {
+            // This is likely a classification model, create a feature extraction model
+            // by using all layers except the last one
+            try {
+              const layerOutput = this.mobilenet.layers[this.mobilenet.layers.length - 2].output;
+              featureModel = tf.model({
+                inputs: this.mobilenet.input,
+                outputs: layerOutput
+              });
+            } catch (error) {
+              // If we can't create a feature model, use the full model output
+              // (will be classification probabilities, but can still work as features)
+              console.warn('Could not extract intermediate features, using full model output:', error);
+            }
+          }
+        }
+        
+        // Extract features
+        let features;
+        const predictResult = featureModel.predict(tensor);
+        if (predictResult instanceof Promise) {
+          features = await predictResult;
+        } else {
+          features = predictResult;
+        }
+        
+        // Ensure features is a tensor
+        if (!(features instanceof tf.Tensor)) {
+          features = tf.tensor(features);
+        }
+        
+        // Flatten if needed (in case output is multi-dimensional)
+        if (features.shape.length > 2) {
+          features = features.flatten();
+        }
+        
+        // Get feature vector as array
+        const featureArray = await features.data();
+        
+        // Clean up tensors
+        tensor.dispose();
+        features.dispose();
+        if (featureModel !== this.mobilenet) {
+          featureModel.dispose();
+        }
+        
+        return Array.from(featureArray);
+      }
     } else {
-      // Fallback: Use simplified feature extraction
+      // Fallback: Use simplified feature extraction (should not happen if MobileNet loads correctly)
+      console.warn('MobileNet not available, using pixel features (not recommended)');
       // Resize image and extract pixel features
       const tensor = tf.browser.fromPixels(image)
         .resizeNearestNeighbor([64, 64]) // Smaller size for efficiency
@@ -974,17 +1207,82 @@ class AnimalDetector extends HTMLElement {
         featuresTensor.dispose();
         prediction.dispose();
         
-        // Get predicted class
-        const maxIndex = Array.from(probabilities).indexOf(Math.max(...probabilities));
-        const confidence = probabilities[maxIndex];
-        
         // Map index to label
         const trainedLabels = this.selectedModelInfo.trainedLabels || [];
         const labelMap = this.selectedModelInfo.labelMap || {};
         
         let predictedAnimal = null;
-        if (trainedLabels.length > 0 && maxIndex >= 0 && maxIndex < trainedLabels.length) {
-          predictedAnimal = trainedLabels[maxIndex];
+        let confidence = 0;
+        
+        // Handle both binary classification (single class) and multi-class models
+        const probArray = Array.from(probabilities);
+        
+        // Debug logging (throttled to avoid console spam)
+        if (!this._lastDebugLogTime || (Date.now() - this._lastDebugLogTime) > 2000) {
+          console.log('=== Prediction Debug ===');
+          console.log('Probabilities array:', probArray);
+          console.log('Array length:', probArray.length);
+          console.log('Trained labels:', trainedLabels);
+          console.log('Confidence threshold:', this.confidenceThreshold);
+          this._lastDebugLogTime = Date.now();
+        }
+        
+        if (probArray.length === 1) {
+          // Binary classification model (single class)
+          // Output is a single probability value
+          confidence = probArray[0];
+          
+          // For binary classification, if probability is above threshold, it's the trained class
+          // UNLESS showRawPredictions is enabled (for debugging)
+          if ((this.showRawPredictions || confidence >= this.confidenceThreshold) && trainedLabels.length > 0) {
+            predictedAnimal = trainedLabels[0];
+            // If showing raw prediction but below threshold, add a warning indicator
+            if (this.showRawPredictions && confidence < this.confidenceThreshold) {
+              predictedAnimal = trainedLabels[0] + ' (LOW)';
+            }
+          } else {
+            predictedAnimal = 'NONE';
+            // Debug: Log why it was rejected
+            if (!this._lastDebugLogTime || (Date.now() - this._lastDebugLogTime) > 2000) {
+              console.log(`Binary prediction rejected: confidence ${confidence.toFixed(4)} < threshold ${this.confidenceThreshold}`);
+              console.log('Enable "Show raw predictions" checkbox to see the actual prediction anyway.');
+            }
+          }
+        } else {
+          // Multi-class model
+          // Get predicted class with highest probability
+          const maxIndex = probArray.indexOf(Math.max(...probArray));
+          confidence = probArray[maxIndex];
+          
+          // Debug: Log the prediction details
+          if (!this._lastDebugLogTime || (Date.now() - this._lastDebugLogTime) > 2000) {
+            console.log('Max probability index:', maxIndex);
+            console.log('Max probability value:', confidence);
+            console.log('All probabilities:', probArray.map((p, i) => `${trainedLabels[i] || i}: ${p.toFixed(4)}`).join(', '));
+          }
+          
+          // Only output a prediction if confidence is above the threshold
+          // This prevents false positives when there's no object or the object doesn't match
+          // UNLESS showRawPredictions is enabled (for debugging)
+          if (this.showRawPredictions || confidence >= this.confidenceThreshold) {
+            if (trainedLabels.length > 0 && maxIndex >= 0 && maxIndex < trainedLabels.length) {
+              predictedAnimal = trainedLabels[maxIndex];
+              // If showing raw prediction but below threshold, add a warning indicator
+              if (this.showRawPredictions && confidence < this.confidenceThreshold) {
+                predictedAnimal = trainedLabels[maxIndex] + ' (LOW)';
+              }
+            } else {
+              predictedAnimal = 'NONE';
+            }
+          } else {
+            // Confidence is too low - output "NONE" to indicate no valid detection
+            predictedAnimal = 'NONE';
+            // Debug: Log why it was rejected
+            if (!this._lastDebugLogTime || (Date.now() - this._lastDebugLogTime) > 2000) {
+              console.log(`Prediction rejected: confidence ${confidence.toFixed(4)} < threshold ${this.confidenceThreshold}`);
+              console.log('Enable "Show raw predictions" checkbox to see the actual prediction anyway.');
+            }
+          }
         }
         
         // Update display
@@ -1002,8 +1300,15 @@ class AnimalDetector extends HTMLElement {
     // Update animal box
     if (animal && this.testAnimalValue && this.testAnimalDisplay) {
       this.testAnimalValue.textContent = animal.toUpperCase();
-      this.testAnimalDisplay.style.background = 'rgba(0, 255, 0, 0.9)';
-      this.testAnimalDisplay.style.color = '#ffffff';
+      
+      // Color coding: green for valid detection, red for "NONE", gray for no detection
+      if (animal === 'NONE') {
+        this.testAnimalDisplay.style.background = 'rgba(244, 67, 54, 0.9)'; // Red for "NONE"
+        this.testAnimalDisplay.style.color = '#ffffff';
+      } else {
+        this.testAnimalDisplay.style.background = 'rgba(76, 175, 80, 0.9)'; // Green for valid detection
+        this.testAnimalDisplay.style.color = '#ffffff';
+      }
     } else {
       if (this.testAnimalValue) {
         this.testAnimalValue.textContent = '--';
