@@ -8,6 +8,7 @@ class AnimalDetector extends HTMLElement {
     super();
     this.attachShadow({ mode: 'open' });
     this.mediaPipeReady = false;
+    this.mobilenet = null; // MobileNet model for feature extraction
     
     // Training-related properties
     this.trainingData = [];
@@ -21,6 +22,7 @@ class AnimalDetector extends HTMLElement {
     this.testVideo = null;
     this.testStream = null;
     this.isTestModeActive = false;
+    this.testAnimationFrame = null;
     
     // Load training data from localStorage
     this.loadTrainingData();
@@ -354,107 +356,909 @@ class AnimalDetector extends HTMLElement {
 
   async initializeMediaPipe() {
     try {
-      // Wait for MediaPipe to be loaded
+      // Wait for TensorFlow.js to be loaded
       let retries = 0;
       const maxRetries = 100;
       
       while (retries < maxRetries) {
-        if (window.mediaPipeReady && window.MediaPipeFilesetResolver) {
+        if (typeof tf !== 'undefined') {
           break;
         }
         await new Promise(resolve => setTimeout(resolve, 100));
         retries++;
       }
       
-      if (!window.MediaPipeFilesetResolver) {
-        throw new Error('MediaPipe libraries not loaded');
+      if (typeof tf === 'undefined') {
+        throw new Error('TensorFlow.js is not loaded');
       }
 
-      this.statusText.textContent = 'MediaPipe initialized. Ready for training and testing.';
+      this.statusText.textContent = 'Loading MobileNet for feature extraction...';
+      
+      // Load MobileNet model for feature extraction
+      // Using MobileNet v2 from TensorFlow Hub
+      try {
+        this.mobilenet = await tf.loadLayersModel('https://tfhub.dev/google/tfjs-model/imagenet/mobilenet_v2_100_224/feature_vector/3/default/1', {fromTFHub: true});
+      } catch (error) {
+        // Fallback: try alternative URL
+        console.warn('Primary MobileNet URL failed, trying alternative...', error);
+        this.mobilenet = await tf.loadLayersModel('https://storage.googleapis.com/tfjs-models/tfjs/mobilenet_v2_1.0_224/model.json');
+      }
+      
+      this.statusText.textContent = 'MobileNet initialized. Ready for training and testing.';
       this.mediaPipeReady = true;
     } catch (error) {
-      console.error('Error initializing MediaPipe:', error);
+      console.error('Error initializing MobileNet:', error);
       this.statusText.textContent = `Error: ${error.message}. Check console (F12) for details.`;
     }
   }
 
-  // Placeholder methods - to be implemented later
+  // Feature extraction using MobileNet
+  async extractFeatures(image) {
+    if (!this.mobilenet) {
+      throw new Error('MobileNet not initialized');
+    }
+    
+    // Preprocess image: resize to 224x224 (MobileNet input size)
+    const tensor = tf.browser.fromPixels(image)
+      .resizeNearestNeighbor([224, 224])
+      .expandDims(0)
+      .div(255.0); // Normalize to [0, 1]
+    
+    // Extract features
+    const features = this.mobilenet.predict(tensor);
+    
+    // Get feature vector as array
+    const featureArray = await features.data();
+    
+    // Clean up tensors
+    tensor.dispose();
+    features.dispose();
+    
+    return Array.from(featureArray);
+  }
+
+  // Load image from file
+  loadImageFromFile(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = reject;
+        img.src = e.target.result;
+      };
+      reader.onerror = reject;
+      reader.readAsDataURL(file);
+    });
+  }
+
   loadTrainingData() {
-    // Load from localStorage
-    const saved = localStorage.getItem('animalTrainingData');
-    if (saved) {
-      try {
-        this.trainingData = JSON.parse(saved);
-      } catch (e) {
-        console.error('Error loading training data:', e);
-        this.trainingData = [];
+    try {
+      const saved = localStorage.getItem('animalTrainingData');
+      if (saved) {
+        const data = JSON.parse(saved);
+        this.trainingData = data.trainingData || [];
+        console.log(`Loaded ${this.trainingData.length} training samples from storage`);
       }
+    } catch (error) {
+      console.error('Error loading training data:', error);
+      this.trainingData = [];
     }
   }
 
-  handleFileUpload(e) {
-    // Placeholder - to be implemented
-    console.log('File upload - to be implemented');
+  async handleFileUpload(event) {
+    const files = event.target.files;
+    if (!files || files.length === 0) return;
+
+    const animalName = this.animalTypeInput.value.trim();
+    if (!animalName) {
+      alert('Please enter an animal name first.');
+      this.animalTypeInput.focus();
+      return;
+    }
+
+    if (!this.mobilenet) {
+      alert('MobileNet not initialized. Please wait...');
+      return;
+    }
+
+    let processedCount = 0;
+    let errorCount = 0;
+
+    this.statusText.textContent = `Processing ${files.length} image(s)...`;
+
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      try {
+        const image = await this.loadImageFromFile(file);
+        const features = await this.extractFeatures(image);
+        
+        // Convert image to data URL for display
+        const canvas = document.createElement('canvas');
+        canvas.width = image.width || image.naturalWidth;
+        canvas.height = image.height || image.naturalHeight;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(image, 0, 0);
+        const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+        
+        this.trainingData.push({
+          features: features,
+          label: animalName,
+          imageDataUrl: imageDataUrl,
+          timestamp: Date.now()
+        });
+        processedCount++;
+      } catch (error) {
+        console.error(`Error processing image ${file.name}:`, error);
+        errorCount++;
+      }
+    }
+
+    // Clear file input
+    this.fileInput.value = '';
+
+    // Save to localStorage
+    this.saveTrainingData();
+
+    // Update UI
+    this.updateTrainingStats();
+    this.updateTrainingDataTable();
+    this.trainBtn.disabled = this.trainingData.length === 0;
+
+    // Show feedback
+    if (processedCount > 0) {
+      this.statusText.textContent = `Processed ${processedCount} ${animalName} sample(s) (Total: ${this.trainingData.length})`;
+      if (errorCount > 0) {
+        this.statusText.textContent += `. ${errorCount} image(s) had errors.`;
+      }
+    } else {
+      this.statusText.textContent = `Error processing images. Please try again.`;
+    }
   }
 
-  openTrainingCamera() {
-    // Placeholder - to be implemented
-    console.log('Open training camera - to be implemented');
+  async openTrainingCamera() {
+    if (this.isTrainingCameraOpen) {
+      return; // Already open
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'user' } 
+      });
+      
+      this.trainingStream = stream;
+      this.trainingVideo.srcObject = stream;
+      this.trainingCameraContainer.style.display = 'block';
+      this.openCameraBtn.style.display = 'none';
+      this.takeScreenshotBtn.style.display = 'inline-block';
+      this.closeCameraBtn.style.display = 'inline-block';
+      this.isTrainingCameraOpen = true;
+      
+      this.statusText.textContent = 'Camera opened. Enter animal name and take screenshots.';
+    } catch (error) {
+      console.error('Error opening camera:', error);
+      alert('Error accessing camera: ' + error.message);
+      this.statusText.textContent = 'Error accessing camera';
+    }
   }
 
-  takeScreenshot() {
-    // Placeholder - to be implemented
-    console.log('Take screenshot - to be implemented');
+  async takeScreenshot() {
+    if (!this.isTrainingCameraOpen || !this.trainingVideo) {
+      alert('Camera not open');
+      return;
+    }
+
+    if (!this.mobilenet) {
+      alert('MobileNet not initialized. Please wait...');
+      return;
+    }
+
+    const animalName = this.animalTypeInput.value.trim();
+    if (!animalName) {
+      alert('Please enter an animal name first.');
+      this.animalTypeInput.focus();
+      return;
+    }
+
+    try {
+      this.statusText.textContent = 'Processing screenshot...';
+      
+      // Check if video is ready
+      if (!this.trainingVideo || this.trainingVideo.readyState < 2) {
+        alert('Camera not ready. Please wait a moment and try again.');
+        this.statusText.textContent = 'Camera not ready';
+        return;
+      }
+      
+      const videoWidth = this.trainingVideo.videoWidth;
+      const videoHeight = this.trainingVideo.videoHeight;
+      
+      if (!videoWidth || !videoHeight || videoWidth === 0 || videoHeight === 0) {
+        alert('Camera video dimensions not available. Please wait a moment and try again.');
+        this.statusText.textContent = 'Camera not ready - invalid dimensions';
+        return;
+      }
+      
+      // Wait a moment to ensure video frame is stable
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
+      // Create a canvas to capture the current frame
+      const canvas = document.createElement('canvas');
+      canvas.width = videoWidth;
+      canvas.height = videoHeight;
+      const ctx = canvas.getContext('2d', { willReadFrequently: true });
+      
+      // Mirror the canvas to match what the user sees
+      ctx.save();
+      ctx.scale(-1, 1);
+      ctx.translate(-canvas.width, 0);
+      ctx.drawImage(this.trainingVideo, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+      
+      // Create image from canvas
+      const image = new Image();
+      image.src = canvas.toDataURL('image/png');
+      
+      await new Promise((resolve, reject) => {
+        image.onload = resolve;
+        image.onerror = reject;
+        setTimeout(() => reject(new Error('Image load timeout')), 3000);
+      });
+      
+      // Extract features
+      const features = await this.extractFeatures(image);
+      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
+      
+      this.trainingData.push({
+        features: features,
+        label: animalName,
+        imageDataUrl: imageDataUrl,
+        timestamp: Date.now()
+      });
+      
+      // Save to localStorage
+      this.saveTrainingData();
+      
+      // Update UI
+      this.updateTrainingStats();
+      this.updateTrainingDataTable();
+      this.trainBtn.disabled = this.trainingData.length === 0;
+      
+      // Show feedback
+      this.statusText.textContent = `Captured ${animalName} sample from screenshot (Total: ${this.trainingData.length})`;
+      
+      console.log(`Captured training sample: ${animalName}`, features);
+    } catch (error) {
+      console.error('Error taking screenshot:', error);
+      alert(`Error processing screenshot: ${error.message}`);
+      this.statusText.textContent = 'Error processing screenshot';
+    }
   }
 
   closeTrainingCamera() {
-    // Placeholder - to be implemented
-    console.log('Close training camera - to be implemented');
+    if (this.trainingStream) {
+      this.trainingStream.getTracks().forEach(track => track.stop());
+      this.trainingStream = null;
+    }
+    
+    if (this.trainingVideo) {
+      this.trainingVideo.srcObject = null;
+    }
+    
+    this.trainingCameraContainer.style.display = 'none';
+    this.openCameraBtn.style.display = 'inline-block';
+    this.takeScreenshotBtn.style.display = 'none';
+    this.closeCameraBtn.style.display = 'none';
+    this.isTrainingCameraOpen = false;
+    
+    this.statusText.textContent = 'Camera closed';
   }
 
-  trainModel() {
-    // Placeholder - to be implemented
-    console.log('Train model - to be implemented');
+  async trainModel() {
+    if (this.trainingData.length === 0) {
+      alert('Please add training data before training a model.');
+      return;
+    }
+
+    if (typeof tf === 'undefined') {
+      alert('TensorFlow.js is not loaded. Please refresh the page and try again.');
+      return;
+    }
+
+    // Get model name
+    const modelName = this.modelNameInput.value.trim();
+    if (!modelName) {
+      alert('Please enter a model name before training.');
+      this.modelNameInput.focus();
+      return;
+    }
+
+    // Check if model name already exists
+    const existingModels = this.loadSavedModelsList();
+    if (existingModels.some(m => m.name.toLowerCase() === modelName.toLowerCase())) {
+      if (!confirm(`A model named "${modelName}" already exists. Do you want to overwrite it?`)) {
+        return;
+      }
+      // Delete existing model with same name
+      const existingModel = existingModels.find(m => m.name.toLowerCase() === modelName.toLowerCase());
+      if (existingModel) {
+        this.deleteModel(existingModel.id);
+      }
+    }
+
+    this.statusText.textContent = 'Training model...';
+    this.trainBtn.disabled = true;
+
+    try {
+      // Get unique labels from training data and sort them consistently
+      const uniqueLabels = [...new Set(this.trainingData.map(sample => sample.label))].sort();
+      const numClasses = uniqueLabels.length;
+      
+      // Create dynamic label mapping
+      const labelMap = {};
+      uniqueLabels.forEach((label, index) => {
+        labelMap[label] = index;
+      });
+      
+      console.log('=== Training Model ===');
+      console.log('Unique labels found:', uniqueLabels);
+      console.log('Number of classes:', numClasses);
+      console.log('Label mapping:', labelMap);
+      
+      // Prepare training data
+      const features = this.trainingData.map(sample => sample.features);
+      const labels = this.trainingData.map(sample => {
+        return labelMap[sample.label];
+      });
+
+      // Convert to tensors
+      const xs = tf.tensor2d(features);
+      
+      // Handle single-class vs multi-class models
+      let ys;
+      let model;
+      let compileConfig;
+      
+      if (numClasses === 1) {
+        // Single-class model: use binary classification
+        ys = tf.ones([labels.length, 1]);
+        
+        model = tf.sequential({
+          layers: [
+            tf.layers.dense({
+              inputShape: [features[0].length],
+              units: 64,
+              activation: 'relu'
+            }),
+            tf.layers.dense({
+              units: 32,
+              activation: 'relu'
+            }),
+            tf.layers.dense({
+              units: 1,
+              activation: 'sigmoid'
+            })
+          ]
+        });
+
+        compileConfig = {
+          optimizer: 'adam',
+          loss: 'binaryCrossentropy',
+          metrics: ['accuracy']
+        };
+      } else {
+        // Multi-class model: use one-hot encoding and softmax
+        ys = tf.oneHot(tf.tensor1d(labels, 'int32'), numClasses);
+        
+        model = tf.sequential({
+          layers: [
+            tf.layers.dense({
+              inputShape: [features[0].length],
+              units: 64,
+              activation: 'relu'
+            }),
+            tf.layers.dense({
+              units: 32,
+              activation: 'relu'
+            }),
+            tf.layers.dense({
+              units: numClasses,
+              activation: 'softmax'
+            })
+          ]
+        });
+
+        compileConfig = {
+          optimizer: 'adam',
+          loss: 'categoricalCrossentropy',
+          metrics: ['accuracy']
+        };
+      }
+      
+      // Compile the model
+      model.compile(compileConfig);
+
+      // Train model
+      await model.fit(xs, ys, {
+        epochs: 100,
+        batchSize: Math.min(32, this.trainingData.length),
+        validationSplit: 0.2,
+        shuffle: true,
+        callbacks: {
+          onEpochEnd: (epoch, logs) => {
+            if (epoch % 20 === 0) {
+              console.log(`Epoch ${epoch}: loss = ${logs.loss.toFixed(4)}, acc = ${logs.acc.toFixed(4)}`);
+            }
+          }
+        }
+      });
+
+      // Save model
+      let modelInfo;
+      try {
+        modelInfo = await this.saveModel(model, modelName, this.trainingData, uniqueLabels, labelMap);
+      } catch (error) {
+        if (error.name === 'QuotaExceededError') {
+          alert('Storage quota exceeded! Please delete some old models or clear your browser storage. The model was trained but could not be saved.');
+          this.statusText.textContent = `Model "${modelName}" trained but could not be saved due to storage limit.`;
+          this.trainBtn.disabled = false;
+          xs.dispose();
+          ys.dispose();
+          return;
+        } else {
+          throw error;
+        }
+      }
+      
+      // Clean up tensors
+      xs.dispose();
+      ys.dispose();
+
+      // Update UI
+      this.updateTrainingStats();
+      this.statusText.textContent = `Model "${modelName}" trained and saved successfully with ${this.trainingData.length} samples!`;
+      
+      // Clear model name input
+      this.modelNameInput.value = '';
+      
+      // Optionally clear training data
+      if (confirm('Model saved! Do you want to clear the training data to start fresh?')) {
+        this.trainingData = [];
+        localStorage.removeItem('animalTrainingData');
+        this.updateTrainingStats();
+        this.trainBtn.disabled = true;
+      }
+      
+      console.log('Model training completed:', modelInfo);
+    } catch (error) {
+      console.error('Error training model:', error);
+      this.statusText.textContent = `Training error: ${error.message}`;
+      alert(`Error training model: ${error.message}`);
+    } finally {
+      this.trainBtn.disabled = false;
+    }
   }
 
   clearTrainingData() {
-    // Placeholder - to be implemented
-    console.log('Clear training data - to be implemented');
-  }
-
-  startTestMode() {
-    // Placeholder - to be implemented
-    console.log('Start test mode - to be implemented');
-  }
-
-  stopTestMode() {
-    // Placeholder - to be implemented
-    console.log('Stop test mode - to be implemented');
-  }
-
-  loadSavedModels() {
-    // Load from localStorage
-    const saved = localStorage.getItem('animalSavedModels');
-    if (saved) {
-      try {
-        this.savedModels = JSON.parse(saved);
-        this.updateModelsList();
-      } catch (e) {
-        console.error('Error loading saved models:', e);
-        this.savedModels = [];
+    if (confirm('Are you sure you want to clear all training data? This cannot be undone.')) {
+      this.trainingData = [];
+      localStorage.removeItem('animalTrainingData');
+      
+      // Update UI
+      this.updateTrainingStats();
+      this.updateTrainingDataTable();
+      this.trainBtn.disabled = true;
+      this.statusText.textContent = 'Training data cleared';
+      
+      // Close training camera if open
+      if (this.isTrainingCameraOpen) {
+        this.closeTrainingCamera();
       }
     }
   }
 
-  updateModelsList() {
-    // Placeholder - to be implemented
-    if (this.modelsList) {
-      if (this.savedModels.length === 0) {
-        this.modelsList.innerHTML = '<p style="color: #666; margin: 0; text-align: center;">No models saved yet. Train a model to get started.</p>';
-      } else {
-        // Will be implemented later
-        this.modelsList.innerHTML = '<p style="color: #666; margin: 0; text-align: center;">Models list - to be implemented</p>';
+  async startTestMode() {
+    if (!this.trainedModel || !this.selectedModelInfo) {
+      alert('Please select a model first.');
+      return;
+    }
+
+    if (this.isTestModeActive) {
+      return; // Already active
+    }
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'user' } 
+      });
+      
+      this.testStream = stream;
+      this.testVideo.srcObject = stream;
+      this.testCameraContainer.style.display = 'block';
+      this.testBtn.style.display = 'none';
+      this.stopTestBtn.style.display = 'inline-block';
+      this.isTestModeActive = true;
+      
+      // Start detection loop
+      this.detectAnimalsInTestMode();
+      
+      this.statusText.textContent = 'Test mode active. Showing animal detection results.';
+    } catch (error) {
+      console.error('Error starting test mode:', error);
+      alert('Error accessing camera: ' + error.message);
+      this.statusText.textContent = 'Error accessing camera';
+    }
+  }
+
+  stopTestMode() {
+    if (this.testAnimationFrame) {
+      cancelAnimationFrame(this.testAnimationFrame);
+      this.testAnimationFrame = null;
+    }
+    
+    if (this.testStream) {
+      this.testStream.getTracks().forEach(track => track.stop());
+      this.testStream = null;
+    }
+    
+    if (this.testVideo) {
+      this.testVideo.srcObject = null;
+    }
+    
+    this.testCameraContainer.style.display = 'none';
+    this.testBtn.style.display = 'inline-block';
+    this.stopTestBtn.style.display = 'none';
+    this.isTestModeActive = false;
+    
+    // Reset display
+    this.updateTestAnimalDisplay(null, null);
+    this.statusText.textContent = 'Test mode stopped';
+  }
+
+  async detectAnimalsInTestMode() {
+    if (!this.isTestModeActive || !this.testVideo || !this.trainedModel || !this.mobilenet) {
+      return;
+    }
+
+    if (this.testVideo.readyState === this.testVideo.HAVE_ENOUGH_DATA) {
+      // Extract features from current frame
+      try {
+        const features = await this.extractFeatures(this.testVideo);
+        const featuresTensor = tf.tensor2d([features]);
+        
+        // Predict
+        const prediction = this.trainedModel.predict(featuresTensor);
+        const probabilities = await prediction.data();
+        
+        // Clean up
+        featuresTensor.dispose();
+        prediction.dispose();
+        
+        // Get predicted class
+        const maxIndex = Array.from(probabilities).indexOf(Math.max(...probabilities));
+        const confidence = probabilities[maxIndex];
+        
+        // Map index to label
+        const trainedLabels = this.selectedModelInfo.trainedLabels || [];
+        const labelMap = this.selectedModelInfo.labelMap || {};
+        
+        let predictedAnimal = null;
+        if (trainedLabels.length > 0 && maxIndex >= 0 && maxIndex < trainedLabels.length) {
+          predictedAnimal = trainedLabels[maxIndex];
+        }
+        
+        // Update display
+        this.updateTestAnimalDisplay(predictedAnimal, confidence);
+      } catch (error) {
+        console.error('Error in detection:', error);
       }
+    }
+    
+    // Continue loop
+    this.testAnimationFrame = requestAnimationFrame(() => this.detectAnimalsInTestMode());
+  }
+
+  updateTestAnimalDisplay(animal, confidence) {
+    // Update animal box
+    if (animal && this.testAnimalValue && this.testAnimalDisplay) {
+      this.testAnimalValue.textContent = animal.toUpperCase();
+      this.testAnimalDisplay.style.background = 'rgba(0, 255, 0, 0.9)';
+      this.testAnimalDisplay.style.color = '#ffffff';
+    } else {
+      if (this.testAnimalValue) {
+        this.testAnimalValue.textContent = '--';
+      }
+      if (this.testAnimalDisplay) {
+        this.testAnimalDisplay.style.background = 'rgba(0, 0, 0, 0.7)';
+        this.testAnimalDisplay.style.color = '#ffffff';
+      }
+    }
+    
+    // Update confidence box
+    if (confidence !== null && confidence !== undefined && this.testConfidenceValue && this.testConfidenceDisplay) {
+      const confidenceDecimal = confidence.toFixed(2);
+      this.testConfidenceValue.textContent = confidenceDecimal;
+      
+      if (confidence > 0.7) {
+        this.testConfidenceDisplay.style.background = 'rgba(76, 175, 80, 0.9)';
+        this.testConfidenceValue.style.color = '#ffffff';
+      } else if (confidence > 0.5) {
+        this.testConfidenceDisplay.style.background = 'rgba(255, 152, 0, 0.9)';
+        this.testConfidenceValue.style.color = '#ffffff';
+      } else {
+        this.testConfidenceDisplay.style.background = 'rgba(244, 67, 54, 0.9)';
+        this.testConfidenceValue.style.color = '#ffffff';
+      }
+    } else {
+      if (this.testConfidenceValue) {
+        this.testConfidenceValue.textContent = '--';
+      }
+      if (this.testConfidenceDisplay) {
+        this.testConfidenceDisplay.style.background = 'rgba(0, 0, 0, 0.7)';
+        this.testConfidenceValue.style.color = '#ffffff';
+      }
+    }
+  }
+
+  saveTrainingData() {
+    try {
+      const dataToSave = {
+        trainingData: this.trainingData,
+        timestamp: Date.now()
+      };
+      const jsonString = JSON.stringify(dataToSave);
+      const sizeInMB = new Blob([jsonString]).size / (1024 * 1024);
+      console.log('Saving training data. Size:', sizeInMB.toFixed(2), 'MB');
+      
+      if (sizeInMB > 5) {
+        console.warn('Warning: Training data is large (', sizeInMB.toFixed(2), 'MB). localStorage has ~5-10MB limit.');
+      }
+      
+      localStorage.setItem('animalTrainingData', jsonString);
+      console.log('Training data saved successfully. Sample count:', this.trainingData.length);
+    } catch (error) {
+      console.error('Error saving training data:', error);
+      if (error.name === 'QuotaExceededError') {
+        alert('Error: Training data is too large to save. Please reduce the number of samples or clear old data.');
+      }
+    }
+  }
+
+  sanitizeModelName(name) {
+    return name.replace(/[^a-zA-Z0-9_-]/g, '_');
+  }
+
+  async saveModel(model, modelName, trainingData, uniqueLabels = null, labelMap = null) {
+    try {
+      const sanitizedName = this.sanitizeModelName(modelName);
+      const storageKey = `animal_model_${sanitizedName}_${Date.now()}`;
+      
+      await model.save('indexeddb://' + storageKey);
+      
+      if (!uniqueLabels) {
+        uniqueLabels = [...new Set(trainingData.map(sample => sample.label))].sort();
+      }
+      const labelCounts = {};
+      trainingData.forEach(sample => {
+        labelCounts[sample.label] = (labelCounts[sample.label] || 0) + 1;
+      });
+      
+      if (!labelMap) {
+        labelMap = {};
+        uniqueLabels.forEach((label, index) => {
+          labelMap[label] = index;
+        });
+      }
+      
+      const modelInfo = {
+        id: Date.now().toString(),
+        name: modelName,
+        storageKey: storageKey,
+        trainingDataCount: trainingData.length,
+        trainedLabels: uniqueLabels,
+        labelMap: labelMap,
+        labelCounts: labelCounts,
+        createdAt: new Date().toISOString()
+      };
+      
+      const savedModels = this.loadSavedModelsList();
+      savedModels.push(modelInfo);
+      
+      const jsonString = JSON.stringify(savedModels);
+      const sizeInMB = new Blob([jsonString]).size / (1024 * 1024);
+      
+      if (sizeInMB > 4) {
+        console.warn('Warning: Model metadata is large (', sizeInMB.toFixed(2), 'MB). Consider deleting old models.');
+      }
+      
+      try {
+        localStorage.setItem('animalSavedModels', jsonString);
+      } catch (storageError) {
+        if (storageError.name === 'QuotaExceededError') {
+          console.warn('Storage quota exceeded. Attempting to free space...');
+          const sortedModels = savedModels.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+          const recentModels = sortedModels.slice(0, 10);
+          
+          const modelsToDelete = sortedModels.slice(10);
+          for (const oldModel of modelsToDelete) {
+            try {
+              const oldStorageKey = oldModel.storageKey || this.sanitizeModelName(oldModel.name);
+              await tf.io.removeModel('indexeddb://' + oldStorageKey);
+            } catch (e) {
+              console.warn('Could not remove old model from IndexedDB:', e);
+            }
+          }
+          
+          const reducedJsonString = JSON.stringify(recentModels);
+          localStorage.setItem('animalSavedModels', reducedJsonString);
+          console.log('Freed space by removing old models. Kept', recentModels.length, 'most recent models.');
+        } else {
+          throw storageError;
+        }
+      }
+      
+      this.loadSavedModels();
+      
+      return modelInfo;
+    } catch (error) {
+      console.error('Error saving model:', error);
+      throw error;
+    }
+  }
+
+  loadSavedModelsList() {
+    try {
+      const saved = localStorage.getItem('animalSavedModels');
+      return saved ? JSON.parse(saved) : [];
+    } catch (error) {
+      console.error('Error loading saved models list:', error);
+      return [];
+    }
+  }
+
+  async loadModel(modelId) {
+    try {
+      const models = this.loadSavedModelsList();
+      const modelInfo = models.find(m => m.id === modelId);
+      
+      if (!modelInfo) {
+        throw new Error('Model not found');
+      }
+      
+      const storageKey = modelInfo.storageKey || this.sanitizeModelName(modelInfo.name);
+      const model = await tf.loadLayersModel('indexeddb://' + storageKey);
+      
+      return { model, modelInfo };
+    } catch (error) {
+      console.error('Error loading model:', error);
+      throw error;
+    }
+  }
+
+  deleteModel(modelId) {
+    try {
+      const models = this.loadSavedModelsList();
+      const modelInfo = models.find(m => m.id === modelId);
+      
+      if (!modelInfo) {
+        alert('Model not found');
+        return;
+      }
+      
+      if (!confirm(`Are you sure you want to delete model "${modelInfo.name}"?`)) {
+        return;
+      }
+      
+      const updatedModels = models.filter(m => m.id !== modelId);
+      localStorage.setItem('animalSavedModels', JSON.stringify(updatedModels));
+      
+      try {
+        const storageKey = modelInfo.storageKey || this.sanitizeModelName(modelInfo.name);
+        tf.io.removeModel('indexeddb://' + storageKey);
+      } catch (e) {
+        console.warn('Could not remove model from IndexedDB:', e);
+      }
+      
+      if (this.selectedModelId === modelId) {
+        this.selectedModelId = null;
+        this.trainedModel = null;
+        this.selectedModelInfo = null;
+        this.testBtn.disabled = true;
+        if (this.isTestModeActive) {
+          this.stopTestMode();
+        }
+        this.testStatus.innerHTML = '<strong>Status:</strong> Selected model was deleted. Please select another model.';
+      }
+      
+      this.loadSavedModels();
+    } catch (error) {
+      console.error('Error deleting model:', error);
+      alert('Error deleting model: ' + error.message);
+    }
+  }
+
+  loadSavedModels() {
+    this.savedModels = this.loadSavedModelsList();
+    this.updateModelsList();
+  }
+
+  updateModelsList() {
+    if (!this.modelsList) return;
+    
+    if (this.savedModels.length === 0) {
+      this.modelsList.innerHTML = '<p style="color: #666; margin: 0; text-align: center;">No models saved yet. Train a model to get started.</p>';
+      return;
+    }
+    
+    const listHTML = this.savedModels.map(model => {
+      const isSelected = this.selectedModelId === model.id;
+      const date = new Date(model.createdAt).toLocaleString();
+      return `
+        <div style="padding: 10px; margin-bottom: 8px; border: 2px solid ${isSelected ? '#4CAF50' : '#ddd'}; border-radius: 4px; background: ${isSelected ? '#f0f8f0' : 'white'}; cursor: pointer;" 
+             data-model-id="${model.id}">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div>
+              <strong style="color: #667eea;">${model.name}</strong>
+              <div style="font-size: 12px; color: #666; margin-top: 4px;">
+                ${model.trainingDataCount} samples | Created: ${date}
+              </div>
+            </div>
+            <div>
+              <button class="select-model-btn" data-model-id="${model.id}" style="padding: 5px 10px; margin-right: 5px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                ${isSelected ? '✓ Selected' : 'Select'}
+              </button>
+              <button class="delete-model-btn" data-model-id="${model.id}" style="padding: 5px 10px; background: #f44336; color: white; border: none; border-radius: 4px; cursor: pointer;">Delete</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    
+    this.modelsList.innerHTML = listHTML;
+    
+    // Add event listeners
+    this.modelsList.querySelectorAll('.select-model-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.selectModel(btn.dataset.modelId);
+      });
+    });
+    
+    this.modelsList.querySelectorAll('.delete-model-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        this.deleteModel(btn.dataset.modelId);
+      });
+    });
+  }
+
+  async selectModel(modelId) {
+    try {
+      this.testStatus.innerHTML = '<strong>Status:</strong> Loading model...';
+      
+      const { model, modelInfo } = await this.loadModel(modelId);
+      
+      this.selectedModelId = modelId;
+      this.trainedModel = model;
+      this.selectedModelInfo = modelInfo;
+      
+      if (!this.trainedModel) {
+        throw new Error('Model loaded but is null');
+      }
+      
+      this.testBtn.disabled = false;
+      this.testStatus.innerHTML = `<strong>Status:</strong> Model "${modelInfo.name}" (${modelInfo.trainingDataCount} samples) loaded and ready. Click "Start Test" to begin testing.`;
+      
+      this.updateModelsList();
+      
+      console.log('✓ Model selected and loaded:', modelInfo.name);
+    } catch (error) {
+      console.error('Error selecting model:', error);
+      alert('Error loading model: ' + error.message);
+      this.testStatus.innerHTML = '<strong>Status:</strong> Error loading model. Please try again.';
+      this.selectedModelId = null;
+      this.trainedModel = null;
+      this.selectedModelInfo = null;
     }
   }
 
@@ -487,15 +1291,41 @@ class AnimalDetector extends HTMLElement {
   }
 
   updateTrainingDataTable() {
-    // Placeholder - to be implemented
-    if (this.trainingDataTable) {
-      if (this.trainingData.length === 0) {
-        this.trainingDataTable.innerHTML = '<p style="grid-column: 1 / -1; color: #666; text-align: center; margin: 20px 0;">No training data yet. Upload images or take screenshots to get started.</p>';
-      } else {
-        // Will be implemented later
-        this.trainingDataTable.innerHTML = '<p style="grid-column: 1 / -1; color: #666; text-align: center; margin: 20px 0;">Training data display - to be implemented</p>';
-      }
+    if (!this.trainingDataTable) return;
+    
+    if (this.trainingData.length === 0) {
+      this.trainingDataTable.innerHTML = '<p style="grid-column: 1 / -1; color: #666; text-align: center; margin: 20px 0;">No training data yet. Upload images or take screenshots to get started.</p>';
+      return;
     }
+    
+    const itemsHTML = this.trainingData.map((sample, index) => {
+      return `
+        <div style="position: relative; border: 2px solid #ddd; border-radius: 4px; overflow: hidden; background: white;">
+          <img src="${sample.imageDataUrl}" alt="Training sample" style="width: 100%; height: 120px; object-fit: cover; display: block;">
+          <div style="padding: 5px; background: #f9f9f9; text-align: center; font-size: 12px; color: #333;">
+            <strong>${sample.label}</strong>
+          </div>
+          <button class="delete-sample-btn" data-index="${index}" style="position: absolute; top: 5px; right: 5px; background: rgba(244, 67, 54, 0.9); color: white; border: none; border-radius: 50%; width: 24px; height: 24px; cursor: pointer; font-size: 14px; line-height: 1;">×</button>
+        </div>
+      `;
+    }).join('');
+    
+    this.trainingDataTable.innerHTML = itemsHTML;
+    
+    // Add delete event listeners
+    this.trainingDataTable.querySelectorAll('.delete-sample-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        const index = parseInt(btn.dataset.index);
+        if (confirm('Delete this training sample?')) {
+          this.trainingData.splice(index, 1);
+          this.saveTrainingData();
+          this.updateTrainingStats();
+          this.updateTrainingDataTable();
+          this.trainBtn.disabled = this.trainingData.length === 0;
+          this.statusText.textContent = 'Sample deleted';
+        }
+      });
+    });
   }
 }
 
