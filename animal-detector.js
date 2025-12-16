@@ -241,8 +241,11 @@ class AnimalDetector extends HTMLElement {
       <div class="training-section">
         <h3>🎓 Training Mode</h3>
         <div class="training-controls">
+          <div style="font-size: 12px; color: #d32f2f; margin-bottom: 10px; padding: 8px; background: #ffebee; border-radius: 4px; border-left: 3px solid #d32f2f;">
+            <strong>💡 Tip:</strong> For better detection, train with background/empty images labeled as "background" or "none" to reduce false positives.
+          </div>
           <div class="training-controls-row">
-            <input type="text" id="animalTypeInput" placeholder="Enter animal name (e.g., cat, dog, bird)">
+            <input type="text" id="animalTypeInput" placeholder="Enter animal name (e.g., cat, dog, bird, background)">
           </div>
           <div class="training-controls-row">
             <input type="file" id="fileInput" accept="image/*" multiple>
@@ -1232,54 +1235,116 @@ class AnimalDetector extends HTMLElement {
           // Output is a single probability value
           confidence = probArray[0];
           
+          // For binary classification, check if probability is far from 0.5 (ambiguous)
+          // If it's close to 0.5, it's uncertain
+          const ambiguityThreshold = 0.3; // If confidence is between 0.2 and 0.8, it's ambiguous
+          const isAmbiguous = Math.abs(confidence - 0.5) < ambiguityThreshold;
+          
           // For binary classification, if probability is above threshold, it's the trained class
           // UNLESS showRawPredictions is enabled (for debugging)
-          if ((this.showRawPredictions || confidence >= this.confidenceThreshold) && trainedLabels.length > 0) {
+          if ((this.showRawPredictions || (confidence >= this.confidenceThreshold && !isAmbiguous)) && trainedLabels.length > 0) {
             predictedAnimal = trainedLabels[0];
             // If showing raw prediction but below threshold, add a warning indicator
-            if (this.showRawPredictions && confidence < this.confidenceThreshold) {
+            if (this.showRawPredictions && (confidence < this.confidenceThreshold || isAmbiguous)) {
               predictedAnimal = trainedLabels[0] + ' (LOW)';
             }
           } else {
             predictedAnimal = 'NONE';
             // Debug: Log why it was rejected
             if (!this._lastDebugLogTime || (Date.now() - this._lastDebugLogTime) > 2000) {
-              console.log(`Binary prediction rejected: confidence ${confidence.toFixed(4)} < threshold ${this.confidenceThreshold}`);
+              console.log(`Binary prediction rejected: confidence ${confidence.toFixed(4)} < threshold ${this.confidenceThreshold} or ambiguous (${isAmbiguous})`);
               console.log('Enable "Show raw predictions" checkbox to see the actual prediction anyway.');
             }
           }
         } else {
           // Multi-class model
           // Get predicted class with highest probability
-          const maxIndex = probArray.indexOf(Math.max(...probArray));
-          confidence = probArray[maxIndex];
+          const sortedProbs = [...probArray].map((p, i) => ({ prob: p, index: i })).sort((a, b) => b.prob - a.prob);
+          const maxIndex = sortedProbs[0].index;
+          confidence = sortedProbs[0].prob;
+          
+          // Calculate entropy to detect ambiguous predictions
+          // High entropy = probabilities are similar = uncertain prediction
+          let entropy = 0;
+          for (const p of probArray) {
+            if (p > 0.0001) { // Avoid log(0)
+              entropy -= p * Math.log2(p);
+            }
+          }
+          const maxEntropy = Math.log2(probArray.length); // Maximum possible entropy
+          const normalizedEntropy = entropy / maxEntropy; // 0 = certain, 1 = completely uncertain
+          
+          // Calculate margin: difference between top 2 probabilities
+          // Small margin = ambiguous prediction
+          const margin = probArray.length > 1 
+            ? sortedProbs[0].prob - sortedProbs[1].prob 
+            : 1.0;
+          
+          // Thresholds for detecting ambiguous/background predictions
+          const entropyThreshold = 0.7; // If entropy > 70% of max, it's ambiguous
+          const marginThreshold = 0.3; // If margin < 30%, top 2 are too close
+          
+          // Special handling: If model only has 2 classes (e.g., dog/cat) without background class,
+          // be more conservative with very high confidence predictions
+          // This helps catch false positives on backgrounds
+          const hasBackgroundClass = trainedLabels.some(label => 
+            label.toLowerCase().includes('background') || 
+            label.toLowerCase().includes('none') ||
+            label.toLowerCase().includes('empty')
+          );
+          
+          // If no background class and only 2 classes, require higher confidence threshold
+          // to reduce false positives on backgrounds
+          const effectiveThreshold = (!hasBackgroundClass && probArray.length === 2) 
+            ? Math.max(this.confidenceThreshold, 0.75) // At least 75% confidence for 2-class models
+            : this.confidenceThreshold;
+          
+          const isAmbiguous = normalizedEntropy > entropyThreshold || margin < marginThreshold;
           
           // Debug: Log the prediction details
           if (!this._lastDebugLogTime || (Date.now() - this._lastDebugLogTime) > 2000) {
             console.log('Max probability index:', maxIndex);
             console.log('Max probability value:', confidence);
+            console.log('Entropy:', entropy.toFixed(4), 'Normalized:', normalizedEntropy.toFixed(4));
+            console.log('Margin (top2 diff):', margin.toFixed(4));
+            console.log('Is ambiguous:', isAmbiguous);
             console.log('All probabilities:', probArray.map((p, i) => `${trainedLabels[i] || i}: ${p.toFixed(4)}`).join(', '));
           }
           
-          // Only output a prediction if confidence is above the threshold
+          // Only output a prediction if:
+          // 1. Confidence is above effective threshold (higher for 2-class models without background)
+          // 2. Prediction is not ambiguous (low entropy, high margin)
           // This prevents false positives when there's no object or the object doesn't match
           // UNLESS showRawPredictions is enabled (for debugging)
-          if (this.showRawPredictions || confidence >= this.confidenceThreshold) {
+          const shouldShowPrediction = this.showRawPredictions || (confidence >= effectiveThreshold && !isAmbiguous);
+          
+          if (shouldShowPrediction) {
             if (trainedLabels.length > 0 && maxIndex >= 0 && maxIndex < trainedLabels.length) {
               predictedAnimal = trainedLabels[maxIndex];
-              // If showing raw prediction but below threshold, add a warning indicator
-              if (this.showRawPredictions && confidence < this.confidenceThreshold) {
-                predictedAnimal = trainedLabels[maxIndex] + ' (LOW)';
+              // If showing raw prediction but below threshold or ambiguous, add a warning indicator
+              if (this.showRawPredictions && (confidence < this.confidenceThreshold || isAmbiguous)) {
+                predictedAnimal = trainedLabels[maxIndex] + ' (LOW/AMBIG)';
               }
             } else {
               predictedAnimal = 'NONE';
             }
           } else {
-            // Confidence is too low - output "NONE" to indicate no valid detection
+            // Confidence is too low or prediction is ambiguous - output "NONE"
             predictedAnimal = 'NONE';
             // Debug: Log why it was rejected
             if (!this._lastDebugLogTime || (Date.now() - this._lastDebugLogTime) > 2000) {
-              console.log(`Prediction rejected: confidence ${confidence.toFixed(4)} < threshold ${this.confidenceThreshold}`);
+              const reasons = [];
+              if (confidence < effectiveThreshold) {
+                reasons.push(`confidence ${confidence.toFixed(4)} < effective threshold ${effectiveThreshold.toFixed(4)}`);
+                if (effectiveThreshold > this.confidenceThreshold) {
+                  reasons.push(`(raised from ${this.confidenceThreshold} because model has no background class)`);
+                }
+              }
+              if (isAmbiguous) {
+                reasons.push(`ambiguous (entropy: ${normalizedEntropy.toFixed(2)}, margin: ${margin.toFixed(2)})`);
+              }
+              console.log(`Prediction rejected: ${reasons.join(', ')}`);
+              console.log('💡 Tip: Train with "background" images to improve detection accuracy.');
               console.log('Enable "Show raw predictions" checkbox to see the actual prediction anyway.');
             }
           }
